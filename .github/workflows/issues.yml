@@ -5,6 +5,9 @@ on:
     types:
     - opened
   workflow_call:
+    secrets:
+      AMIABOT_BOT_TOKEN:
+        required: true
 
 jobs:
   add-to-project:
