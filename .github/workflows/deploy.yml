@@ -2,6 +2,17 @@ name: Deploy repository to production (or primary) target.
 
 on:
   workflow_call:
+    inputs:
+        include_composer_dependencies:
+            description: "Setup composer dependencies"
+            required: false
+            type: boolean
+            default: false
+        php_version:
+            description: "PHP version"
+            required: false
+            type: string
+            default: "8.3"
     secrets:
       REMOTE_SSH_PRIVATE_KEY:
         required: true
@@ -27,6 +38,20 @@ jobs:
     steps:
     - name: Checkout project
       uses: actions/checkout@v4
+
+    - name: Setup PHP
+      if: inputs.include_composer_dependencies == true
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: ${{ inputs.php_version }}
+        coverage: none
+        tools: composer, cs2pr
+
+    - name: Run composer build
+      if: inputs.include_composer_dependencies == true
+      run: |
+        composer install --no-dev --no-progress
+        composer dump-autoload
 
     - name: Deploy to server
       if: success()
