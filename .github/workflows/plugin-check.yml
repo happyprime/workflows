@@ -48,7 +48,7 @@ jobs:
     - name: Build plugin
       id: build
       run: |
-        wp dist-archive .  "${{ runner.temp }}/plugin.zip" --create-target-dir
+        wp dist-archive .  "${{ runner.temp }}/plugin.zip" --create-target-dir --plugin-dirname=plugin
         unzip "${{ runner.temp }}/plugin.zip" -d "${{ runner.temp }}/build"
 
     - name: Run plugin check
