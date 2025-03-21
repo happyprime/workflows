@@ -37,8 +37,10 @@ jobs:
     - name: Build plugin
       id: build
       run: |
-        PLUGIN_ZIP=$(wp dist-archive . --return-path)
-        PLUGIN_SLUG=$(basename "$PLUGIN_ZIP" .zip)
+        # Create zip and capture the filename from the success message
+        PLUGIN_ZIP=$(wp dist-archive . . | sed 's/Success: Created //')
+        # Get plugin slug by removing version number and .zip extension
+        PLUGIN_SLUG=$(echo "$PLUGIN_ZIP" | sed -E 's/[.][0-9]+[.][0-9]+[.][0-9]+[.]zip$//')
         mkdir tmp-build
         unzip "$PLUGIN_ZIP" -d tmp-build
         echo "slug=$PLUGIN_SLUG" >> $GITHUB_OUTPUT
