@@ -8,6 +8,11 @@ on:
         description: 'PHP version to use'
         required: true
         default: '8.3'
+      include_composer_dependencies:
+        description: "Setup composer dependencies"
+        required: false
+        type: boolean
+        default: true
 
 # The GITHUB_TOKEN used by Dependabot has read-only permissions
 # by default, so we provide write permissions to this workflow
@@ -30,6 +35,12 @@ jobs:
         php-version: ${{ inputs.php-version }}
         coverage: none
         tools: wp-cli
+
+    - name: Run composer build
+      if: inputs.include_composer_dependencies == true
+      run: |
+        composer install --no-dev --no-progress
+        composer dump-autoload
 
     - name: Install latest version of dist-archive-command
       run: wp package install wp-cli/dist-archive-command:@stable
