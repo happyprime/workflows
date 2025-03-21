@@ -1,0 +1,49 @@
+name: WP.org Plugin Check
+
+on:
+  workflow_call:
+    inputs:
+      php-version:
+        type: string
+        description: 'PHP version to use'
+        required: true
+        default: '8.3'
+
+# The GITHUB_TOKEN used by Dependabot has read-only permissions
+# by default, so we provide write permissions to this workflow
+# so that comments can be left on the pull request.
+# https://docs.github.com/en/code-security/dependabot/working-with-dependabot/automating-dependabot-with-github-actions#changing-github_token-permissions
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: ${{ inputs.php-version }}
+        coverage: none
+        tools: wp-cli
+
+    - name: Install latest version of dist-archive-command
+      run: wp package install wp-cli/dist-archive-command:@stable
+
+    - name: Build plugin
+      id: build
+      run: |
+        PLUGIN_ZIP=$(wp dist-archive . --return-path)
+        PLUGIN_SLUG=$(basename "$PLUGIN_ZIP" .zip)
+        mkdir tmp-build
+        unzip "$PLUGIN_ZIP" -d tmp-build
+        echo "slug=$PLUGIN_SLUG" >> $GITHUB_OUTPUT
+
+    - name: Run plugin check
+      uses: wordpress/plugin-check-action@v1.0.6
+      with:
+        build-dir: ./tmp-build/${{ steps.build.outputs.slug }}
