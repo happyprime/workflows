@@ -48,15 +48,10 @@ jobs:
     - name: Build plugin
       id: build
       run: |
-        # Create zip and capture the filename from the success message
-        PLUGIN_ZIP=$(wp dist-archive . . | sed 's/Success: Created //')
-        # Get plugin slug by removing version number and .zip extension
-        PLUGIN_SLUG=$(echo "$PLUGIN_ZIP" | sed -E 's/[.][0-9]+[.][0-9]+[.][0-9]+[.]zip$//')
-        mkdir tmp-build
-        unzip "$PLUGIN_ZIP" -d tmp-build
-        echo "slug=$PLUGIN_SLUG" >> $GITHUB_OUTPUT
+        wp dist-archive .  "${{ runner.temp }}/plugin.zip" --create-target-dir --plugin-dirname=plugin
+        unzip "${{ runner.temp }}/plugin.zip" -d "${{ runner.temp }}/build"
 
     - name: Run plugin check
       uses: wordpress/plugin-check-action@v1.0.6
       with:
-        build-dir: ./tmp-build/${{ steps.build.outputs.slug }}
+        build-dir: "${{ runner.temp }}/build/plugin"
