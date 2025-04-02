@@ -56,4 +56,4 @@ jobs:
     - name: Run plugin check
       uses: wordpress/plugin-check-action@v1.1.2
       with:
-        build-dir: "${{ runner.temp }}/${{ env.PLUGIN_SLUG }}"
+        build-dir: "${{ runner.temp }}/build"
