@@ -51,7 +51,7 @@ jobs:
       id: build
       run: |
         wp dist-archive .  "${{ runner.temp }}/${{ env.PLUGIN_SLUG }}.zip"
-        unzip "${{ runner.temp }}/${{ env.PLUGIN_SLUG }}.zip" -d "${{ runner.temp }}/${{ env.PLUGIN_SLUG }}"
+        unzip "${{ runner.temp }}/${{ env.PLUGIN_SLUG }}.zip"
 
     - name: Run plugin check
       uses: wordpress/plugin-check-action@v1.1.2
