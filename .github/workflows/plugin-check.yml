@@ -39,19 +39,21 @@ jobs:
     - name: Run composer build
       if: inputs.include_composer_dependencies == true
       run: |
-        composer install --no-dev --no-progress
-        composer dump-autoload
+        composer install --no-dev --no-progress --optimize-autoloader
 
     - name: Install latest version of dist-archive-command
       run: wp package install wp-cli/dist-archive-command:@stable
 
+    - name: Capture the plugin slug
+      run: echo "PLUGIN_SLUG=$(echo ${{ github.repository }} | cut -d'/' -f2)" >> $GITHUB_ENV
+
     - name: Build plugin
       id: build
       run: |
-        wp dist-archive .  "${{ runner.temp }}/plugin.zip" --create-target-dir --plugin-dirname=plugin
-        unzip "${{ runner.temp }}/plugin.zip" -d "${{ runner.temp }}/build"
+        wp dist-archive .  "${{ runner.temp }}/${{ env.PLUGIN_SLUG }}.zip"
+        unzip "${{ runner.temp }}/${{ env.PLUGIN_SLUG }}.zip" -d "${{ runner.temp }}/${{ env.PLUGIN_SLUG }}"
 
     - name: Run plugin check
       uses: wordpress/plugin-check-action@v1.1.2
       with:
-        build-dir: "${{ runner.temp }}/build/plugin"
+        build-dir: "${{ runner.temp }}/${{ env.PLUGIN_SLUG }}"
