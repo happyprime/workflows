@@ -33,7 +33,7 @@ jobs:
     - name: Setup Node
       uses: actions/setup-node@v4
       with:
-        node-version: ${{ inputs.node-version }}
+        node-version: ${{ format('{0}', inputs.node-version) }}
         cache: 'npm'
 
     - name: Verify Node dependency cache
@@ -44,7 +44,7 @@ jobs:
         restore-keys: node-dependencies-
 
     - name: Install Node dependencies
-      run: npm install
+      run: npm ci
 
     - name: Build
       run: npm run build
@@ -53,11 +53,13 @@ jobs:
       id: git
       shell: bash
       run: |
-        echo 'changes<<EOF' >> $GITHUB_OUTPUT
-        echo "$(git status --porcelain --untracked-files=all)" >> $GITHUB_OUTPUT
-        echo 'EOF' >> $GITHUB_OUTPUT
-        echo "nodeVersion=$(node --version)" >> $GITHUB_OUTPUT
-        echo "npmVersion=$(npm --version)" >> $GITHUB_OUTPUT
+        {
+          echo 'changes<<EOF'
+          echo "$(git status --porcelain --untracked-files=all)"
+          echo 'EOF'
+          echo "nodeVersion=$(node --version)"
+          echo "npmVersion=$(npm --version)"
+        } >> $GITHUB_OUTPUT
 
     - name: Fail if changes detected
       shell: bash
