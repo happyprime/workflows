@@ -44,7 +44,7 @@ jobs:
         restore-keys: node-dependencies-
 
     - name: Install Node dependencies
-      run: npm ci
+      run: npm install
 
     - name: Build
       run: npm run build
