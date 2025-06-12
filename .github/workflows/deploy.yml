@@ -58,7 +58,7 @@ jobs:
       uses: easingthemes/ssh-deploy@v5.1.1
       env:
           SSH_PRIVATE_KEY: ${{ secrets.REMOTE_SSH_PRIVATE_KEY }}
-          ARGS: "-av --dry-run --exclude=.git"
+          ARGS: "--exclude=.git --delete --dry-run --include-from=.deploy_include --exclude-from=.deploy_ignore"
           SOURCE: "./"
           REMOTE_HOST: ${{ secrets.REMOTE_HOST }}
           REMOTE_USER: ${{ secrets.REMOTE_USER }}
