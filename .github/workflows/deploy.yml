@@ -77,7 +77,7 @@ jobs:
             "unfurl_links": false,
             "unfurl_media": false,
             "username": "Happy Prime Deployment: ${{ github.event.sender.login }}",
-            "text": ":white_check_mark: Deployment from the <https://github.com/${{ github.repository }}|${{ github.repository }}> `trunk` branch to ${{ secrets.PRODUCTION_URL }} complete."
+            "text": ":white_check_mark: Deployment from the <https://github.com/${{ github.repository }}|${{ github.repository }}> `${{ github.ref_name }}` branch to ${{ secrets.PRODUCTION_URL }} complete."
           }
 
     - name: Deployment failed Slack notification
@@ -92,5 +92,5 @@ jobs:
             "unfurl_links": false,
             "unfurl_media": false,
             "username": "Happy Prime Deployment: ${{ github.event.sender.login }}",
-            "text": ":large_red_square: Deployment from the <https://github.com/${{ github.repository }}|${{ github.repository }}> `trunk` branch to ${{ secrets.PRODUCTION_URL }} failed."
+            "text": ":large_red_square: Deployment from the <https://github.com/${{ github.repository }}|${{ github.repository }}> `${{ github.ref_name }}` branch to ${{ secrets.PRODUCTION_URL }} failed."
           }
