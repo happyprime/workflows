@@ -58,7 +58,7 @@ jobs:
       uses: easingthemes/ssh-deploy@v5.1.1
       env:
           SSH_PRIVATE_KEY: ${{ secrets.REMOTE_SSH_PRIVATE_KEY }}
-          ARGS: "-rltzv --progress --stats --itemize-changes --delete --exclude-from=.deploy_protect --include-from=.deploy_include --exclude-from=.deploy_ignore"
+          ARGS: "-rltzv --progress --stats --delete --exclude-from=.deploy_protect --include-from=.deploy_include --exclude-from=.deploy_ignore"
           SOURCE: "./"
           REMOTE_HOST: ${{ secrets.REMOTE_HOST }}
           REMOTE_USER: ${{ secrets.REMOTE_USER }}
