@@ -67,7 +67,7 @@ jobs:
       uses: easingthemes/ssh-deploy@v5.1.1
       env:
           SSH_PRIVATE_KEY: ${{ secrets.REMOTE_SSH_PRIVATE_KEY }}
-          ARGS: '-rltzvOi --dry-run --stats --delete --filter="merge .deploy_manifest"'
+          ARGS: '-rltzvOi --stats --delete --filter="merge .deploy_manifest"'
           SOURCE: "./"
           REMOTE_HOST: ${{ secrets.REMOTE_HOST }}
           REMOTE_USER: ${{ secrets.REMOTE_USER }}
