@@ -53,12 +53,21 @@ jobs:
         composer install --no-dev --no-progress
         composer dump-autoload
 
+    - name: Verify deploy manifest exists
+      run: |
+        if [ ! -f ".deploy_manifest" ]; then
+          echo "❌ .deploy_manifest file not found!"
+          echo "Please provide a .deploy_manifest to specify which files should be deployed."
+          exit 1
+        fi
+        echo "✅ .deploy_manifest file found"
+
     - name: Deploy to server
       if: success()
       uses: easingthemes/ssh-deploy@v5.1.1
       env:
           SSH_PRIVATE_KEY: ${{ secrets.REMOTE_SSH_PRIVATE_KEY }}
-          ARGS: '-rltzvOi --stats --delete --filter="merge .deploy_manifest"'
+          ARGS: '-rltzvOi --dry-run --stats --delete --filter="merge .deploy_manifest"'
           SOURCE: "./"
           REMOTE_HOST: ${{ secrets.REMOTE_HOST }}
           REMOTE_USER: ${{ secrets.REMOTE_USER }}
