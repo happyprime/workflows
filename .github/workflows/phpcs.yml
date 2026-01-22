@@ -8,6 +8,11 @@ on:
         description: 'PHP version to use'
         required: true
         default: '8.3'
+      working-directory:
+        type: string
+        description: 'Working directory for the PHP project'
+        required: false
+        default: '.'
 
 # The GITHUB_TOKEN used by Dependabot has read-only permissions
 # by default, so we provide write permissions to this workflow
@@ -20,6 +25,9 @@ permissions:
 jobs:
   phpcs:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,7 +46,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ steps.cache-composer.outputs.dir }}
-          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+          key: ${{ runner.os }}-composer-${{ hashFiles(format('{0}/composer.lock', inputs.working-directory)) }}
           restore-keys: |
             ${{ runner.os }}-composer-
 
