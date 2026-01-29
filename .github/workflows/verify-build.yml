@@ -1,4 +1,4 @@
-name: Verify build (Node 20)
+name: Verify build (Node 24)
 
 on:
   workflow_call:
@@ -7,7 +7,7 @@ on:
         type: number
         description: 'Node version to use'
         required: true
-        default: 20
+        default: 24
 
 # The GITHUB_TOKEN used by Dependabot has read-only permissions by default. We
 # provide write permissions to this workflow so that comments can be left on
@@ -35,6 +35,9 @@ jobs:
       with:
         node-version: ${{ format('{0}', inputs.node-version) }}
         cache: 'npm'
+
+    - name: Update npm to latest
+      run: npm install -g npm@latest
 
     - name: Verify Node dependency cache
       uses: actions/cache@v5
