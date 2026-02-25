@@ -13,10 +13,10 @@ on:
         description: 'Working directory for the PHP project'
         required: false
         default: '.'
-      secrets:
-        composer-auth-token:
-          description: 'GitHub token for private Composer dependencies'
-          required: false
+    secrets:
+      composer-auth-token:
+        description: 'GitHub token for private Composer dependencies'
+        required: false
 
 # The GITHUB_TOKEN used by Dependabot has read-only permissions
 # by default, so we provide write permissions to this workflow

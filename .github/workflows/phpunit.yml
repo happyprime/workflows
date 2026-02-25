@@ -2,11 +2,10 @@ name: PHPUnit
 
 on:
   workflow_call:
-    inputs:
-      secrets:
-        composer-auth-token:
-          description: 'GitHub token for private Composer dependencies'
-          required: false
+    secrets:
+      composer-auth-token:
+        description: 'GitHub token for private Composer dependencies'
+        required: false
 
 jobs:
   phpunit:
