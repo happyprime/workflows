@@ -1,6 +1,12 @@
 name: PHPUnit
 
-on: workflow_call
+on:
+  workflow_call:
+    inputs:
+      secrets:
+        composer-auth-token:
+          description: 'GitHub token for private Composer dependencies'
+          required: false
 
 jobs:
   phpunit:
@@ -63,6 +69,8 @@ jobs:
             ${{ runner.os }}-composer-
 
       - name: Install dependencies
+        env:
+          COMPOSER_AUTH: ${{ secrets.composer-auth-token && format('{{"github-oauth":{{"github.com":"{0}"}}}}', secrets.composer-auth-token) || '' }}
         run: |
           composer install --prefer-dist --no-progress
 
