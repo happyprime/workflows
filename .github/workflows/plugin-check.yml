@@ -34,7 +34,7 @@ jobs:
       with:
         php-version: ${{ inputs.php-version }}
         coverage: none
-        tools: wp-cli:latest
+        tools: wp-cli:2.13.0
 
     - name: Run composer build
       if: inputs.include_composer_dependencies == true
