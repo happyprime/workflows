@@ -42,7 +42,7 @@ jobs:
         composer install --no-dev --no-progress --optimize-autoloader
 
     - name: Install latest version of dist-archive-command
-      run: wp package install wp-cli/dist-archive-command:3.2.0
+      run: wp package install wp-cli/dist-archive-command:3.1.0
 
     - name: Capture the plugin slug
       run: echo "PLUGIN_SLUG=$(echo ${{ github.repository }} | cut -d'/' -f2)" >> $GITHUB_ENV
