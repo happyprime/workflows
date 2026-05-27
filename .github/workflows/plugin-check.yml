@@ -57,6 +57,6 @@ jobs:
         unzip "${{ runner.temp }}/${{ env.PLUGIN_SLUG }}.zip" -d "${{ runner.temp }}/build"
 
     - name: Run plugin check
-      uses: wordpress/plugin-check-action@v1.1.5
+      uses: wordpress/plugin-check-action@v1.1.6
       with:
         build-dir: "${{ runner.temp }}/build/${{ env.PLUGIN_SLUG }}"
