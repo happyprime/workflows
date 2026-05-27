@@ -40,6 +40,9 @@ jobs:
       if: inputs.include_composer_dependencies == true
       run: |
         composer install --no-dev --no-progress --optimize-autoloader
+      env:
+        GITHUB_TOKEN: ""  # override any job-level tokens so Composer skips validation
+        COMPOSER_AUTH: ""
 
     - name: Install latest version of dist-archive-command
       run: wp package install wp-cli/dist-archive-command:3.1.0
