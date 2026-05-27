@@ -7,7 +7,7 @@ on:
         type: string
         description: 'PHP version to use'
         required: true
-        default: '8.3'
+        default: '8.4'
       working-directory:
         type: string
         description: 'Working directory for the PHP project'
