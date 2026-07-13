@@ -33,6 +33,10 @@ on:
         description: 'Minimum severity to report as a warning'
         required: false
         default: 6
+    secrets:
+      composer-auth-token:
+        description: 'GitHub token for private Composer dependencies'
+        required: false
 
 # The GITHUB_TOKEN used by Dependabot has read-only permissions by default, so
 # we provide write permissions here so comments can be left on the pull request.
@@ -74,8 +78,11 @@ jobs:
       - name: Install Composer dependencies
         if: ${{ inputs.include_composer_dependencies && hashFiles('composer.json') != '' }}
         env:
+          # Private dependencies need an explicit token; the runner's own
+          # GITHUB_TOKEN cannot read other repositories. Callers that only use
+          # public packages pass nothing and this stays empty, as before.
           GITHUB_TOKEN: ''
-          COMPOSER_AUTH: ''
+          COMPOSER_AUTH: ${{ secrets.composer-auth-token && format('{{"github-oauth":{{"github.com":"{0}"}}}}', secrets.composer-auth-token) || '' }}
         run: composer install --no-dev --no-progress --optimize-autoloader
 
       - name: Install dist-archive-command
