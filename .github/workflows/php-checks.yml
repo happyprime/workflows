@@ -1,0 +1,250 @@
+name: PHP checks
+
+# Runs every configured PHP check in a single job so that checkout, PHP setup,
+# and `composer install` are paid for once rather than once per check.
+#
+# Each check runs only when its configuration file is present, and each runs
+# even if an earlier one failed, so a single push reports every problem at once.
+
+on:
+  workflow_call:
+    inputs:
+      php-version:
+        type: string
+        description: 'PHP version to use.'
+        required: false
+        default: '8.4'
+      working-directory:
+        type: string
+        description: 'Working directory for the PHP project.'
+        required: false
+        default: '.'
+      wp-versions:
+        type: string
+        description: 'Space separated WordPress versions for PHPUnit to test against. e.g. "latest trunk".'
+        required: false
+        default: 'latest'
+      skip:
+        type: string
+        description: 'Space separated checks to skip even when configured: phpcs, phpstan, phpunit.'
+        required: false
+        default: ''
+    secrets:
+      composer-auth-token:
+        description: 'GitHub token for private Composer dependencies'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  php-checks:
+    name: PHP checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Detect which checks this project has configured. Config file naming is
+      # inconsistent across our repositories, so each check looks for every
+      # spelling we currently use.
+      - name: Detect configuration
+        id: detect
+        run: |
+          skip=" ${{ inputs.skip }} "
+
+          detect() {
+            local name="$1"
+            shift
+            case "$skip" in
+              *" $name "*) echo "false"; return ;;
+            esac
+            for file in "$@"; do
+              if [ -f "$file" ]; then
+                echo "true"
+                return
+              fi
+            done
+            echo "false"
+          }
+
+          {
+            echo "phpcs=$(detect phpcs phpcs.xml phpcs.xml.dist .phpcs.xml .phpcs.xml.dist)"
+            echo "phpstan=$(detect phpstan phpstan.neon phpstan.neon.dist phpstan.dist.neon)"
+            echo "phpunit=$(detect phpunit phpunit.xml phpunit.xml.dist .phpunit.xml.dist)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Warn when nothing is configured
+        if: >-
+          steps.detect.outputs.phpcs == 'false' &&
+          steps.detect.outputs.phpstan == 'false' &&
+          steps.detect.outputs.phpunit == 'false'
+        run: echo "::warning::No PHPCS, PHPStan, or PHPUnit configuration was found. No PHP checks ran."
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          coverage: none
+          extensions: ${{ steps.detect.outputs.phpunit == 'true' && 'mysqli' || '' }}
+          tools: composer, cs2pr
+
+      - name: Cache Composer
+        id: cache-composer
+        run: |
+          echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.cache-composer.outputs.dir }}
+          key: ${{ runner.os }}-composer-${{ hashFiles(format('{0}/composer.lock', inputs.working-directory)) }}
+          restore-keys: |
+            ${{ runner.os }}-composer-
+
+      - name: Install dependencies
+        env:
+          COMPOSER_AUTH: ${{ secrets.composer-auth-token && format('{{"github-oauth":{{"github.com":"{0}"}}}}', secrets.composer-auth-token) || '' }}
+        run: |
+          composer install --prefer-dist --no-progress
+
+      # A `services:` container would start for every caller, including the many
+      # that have no PHPUnit configuration, so the database starts from a step
+      # that can be skipped instead.
+      - name: Start MySQL
+        if: steps.detect.outputs.phpunit == 'true'
+        run: |
+          docker run --name wp-tests-db -d \
+            -e MYSQL_ROOT_PASSWORD=password \
+            -p 3306:3306 \
+            mysql:latest
+
+          for _ in $(seq 1 60); do
+            if docker exec wp-tests-db mysqladmin ping -uroot -ppassword --silent 2>/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "::error::MySQL did not become ready in time."
+          exit 1
+
+      # install-wp-tests.sh pulls the test suite from Subversion for every
+      # WordPress version, not just trunk, so SVN is required whenever PHPUnit
+      # runs. The guard skips the install if the runner image already has it.
+      - name: Install SVN
+        if: steps.detect.outputs.phpunit == 'true'
+        run: |
+          if ! command -v svn > /dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y --no-install-recommends subversion
+          fi
+
+      # Each WordPress version gets its own core directory, test directory, and
+      # database. install-wp-tests.sh drops and recreates the database it is
+      # given, so sharing one name across versions would destroy the first
+      # suite's tables while the second installs.
+      - name: Install WordPress test suites
+        if: steps.detect.outputs.phpunit == 'true'
+        run: |
+          if [ ! -f bin/install-wp-tests.sh ]; then
+            echo "::error::PHPUnit is configured but bin/install-wp-tests.sh is missing."
+            exit 1
+          fi
+
+          for version in ${{ inputs.wp-versions }}; do
+            slug="${version//[^[:alnum:]]/-}"
+            echo "::group::Install WordPress $version"
+            WP_CORE_DIR="/tmp/wp-core-$slug" \
+            WP_TESTS_DIR="/tmp/wp-tests-$slug" \
+              bash bin/install-wp-tests.sh "wp_tests_$slug" root password "127.0.0.1:3306" "$version"
+            echo "::endgroup::"
+          done
+
+      # A configuration file with no matching binary means the tool was never
+      # added to require-dev. Report that rather than failing the check with a
+      # "command not found" that looks like a code problem.
+      - name: Verify tooling is installed
+        if: ${{ !cancelled() }}
+        run: |
+          check() {
+            if [ "$1" = "true" ] && [ ! -x "vendor/bin/$2" ]; then
+              echo "::warning::$3 is configured but vendor/bin/$2 is missing. Add it to require-dev."
+            fi
+          }
+
+          check "${{ steps.detect.outputs.phpcs }}" phpcs PHPCS
+          check "${{ steps.detect.outputs.phpstan }}" phpstan PHPStan
+          check "${{ steps.detect.outputs.phpunit }}" phpunit PHPUnit
+
+      # From here every check uses `!cancelled()` so that a failure in one does
+      # not hide the results of the others, and `continue-on-error` so that the
+      # job reaches the summary. The summary step is what fails the job.
+      - name: PHPCS
+        id: phpcs
+        if: ${{ !cancelled() && steps.detect.outputs.phpcs == 'true' }}
+        continue-on-error: true
+        run: vendor/bin/phpcs -q --report=checkstyle . | cs2pr --notices-as-warnings
+
+      - name: PHPStan
+        id: phpstan
+        if: ${{ !cancelled() && steps.detect.outputs.phpstan == 'true' }}
+        continue-on-error: true
+        run: vendor/bin/phpstan analyse --no-progress --error-format=github
+
+      - name: PHPUnit
+        id: phpunit
+        if: ${{ !cancelled() && steps.detect.outputs.phpunit == 'true' }}
+        continue-on-error: true
+        run: |
+          status=0
+
+          for version in ${{ inputs.wp-versions }}; do
+            slug="${version//[^[:alnum:]]/-}"
+            echo "::group::PHPUnit against WordPress $version"
+
+            if ! WP_TESTS_DIR="/tmp/wp-tests-$slug" vendor/bin/phpunit; then
+              status=1
+              echo "::error::PHPUnit failed against WordPress $version."
+            fi
+
+            echo "::endgroup::"
+          done
+
+          exit $status
+
+      # Report each check's result and fail the job if any of them failed.
+      - name: Summarize
+        if: ${{ !cancelled() }}
+        run: |
+          failed=0
+
+          {
+            echo "### PHP checks"
+            echo ""
+            echo "| Check | Result |"
+            echo "| --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          summarize() {
+            local label="$1"
+            local outcome="$2"
+            local result
+
+            case "$outcome" in
+              success) result="Passed" ;;
+              failure) result="**Failed**"; failed=1 ;;
+              *)       result="Not configured" ;;
+            esac
+
+            echo "| $label | $result |" >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          summarize "PHPCS" "${{ steps.phpcs.outcome }}"
+          summarize "PHPStan" "${{ steps.phpstan.outcome }}"
+          summarize "PHPUnit (${{ inputs.wp-versions }})" "${{ steps.phpunit.outcome }}"
+
+          exit $failed

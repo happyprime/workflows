@@ -1,0 +1,189 @@
+name: JavaScript checks
+
+# Runs every configured JavaScript and CSS check in a single job so that
+# checkout, Node setup, and `npm ci` are paid for once rather than once per
+# check.
+#
+# Each check runs only when the project defines it, and each runs even if an
+# earlier one failed, so a single push reports every problem at once.
+#
+# Build verification stays in verify-build.yml. It answers a different question
+# — whether committed build output matches source — and applies to projects
+# that ship CSS with no JavaScript checks at all.
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: number
+        description: 'Node version to use.'
+        required: false
+        default: 24
+      working-directory:
+        type: string
+        description: 'Working directory for the Node project.'
+        required: false
+        default: '.'
+      skip:
+        type: string
+        description: 'Space separated checks to skip even when configured: eslint, stylelint, package_lint, unit_tests.'
+        required: false
+        default: ''
+    secrets:
+      npm-auth-token:
+        description: 'Token for private npm packages'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  js-checks:
+    name: JavaScript checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Each check runs through the project's own npm script rather than a
+      # command assembled here, because the tools are not consistently declared
+      # as direct dependencies — several projects lint with a binary that only
+      # arrives transitively, which `npx` cannot be relied on to find.
+      #
+      # Script naming is not yet consistent across our repositories either, so
+      # each check accepts the aliases currently in use. When a project has the
+      # configuration for a check but no script to run it, that is reported as a
+      # warning rather than passed over silently.
+      - name: Detect configuration
+        id: detect
+        run: |
+          skip=" ${{ inputs.skip }} "
+
+          has_script() {
+            [ -f package.json ] && [ "$(jq -r --arg s "$1" '.scripts[$s] // empty' package.json)" != "" ]
+          }
+
+          # resolve <name> "<npm script aliases>" "<config files>"
+          resolve() {
+            local name="$1" scripts="$2" configs="$3"
+
+            case "$skip" in
+              *" $name "*) return ;;
+            esac
+
+            for script in $scripts; do
+              if has_script "$script"; then
+                echo "$name=npm run $script" >> "$GITHUB_OUTPUT"
+                return
+              fi
+            done
+
+            for file in $configs; do
+              if [ -f "$file" ]; then
+                echo "::warning::Found $file but no npm script named one of: $scripts. Skipping $name."
+                return
+              fi
+            done
+          }
+
+          resolve eslint "lint lint:js" \
+            "eslint.config.js eslint.config.mjs eslint.config.cjs .eslintrc .eslintrc.js .eslintrc.json"
+
+          resolve stylelint "lint:css lint:style" \
+            "stylelint.config.js .stylelintrc .stylelintrc.js .stylelintrc.json"
+
+          resolve package_lint "lint:package lint:pkg-json" \
+            ".npmpackagejsonlintrc.json npmpackagejsonlint.config.js"
+
+          # Matched by exact name so that test:e2e, test:php, and test:watch are
+          # never picked up. Not every project uses Vitest — calendar-blocks
+          # runs Jest — so this check is named for what it does, not the tool.
+          resolve unit_tests "test test:js" \
+            "vitest.config.js vitest.config.ts vitest.config.mjs jest.config.js"
+
+      - name: Warn when nothing is configured
+        if: >-
+          steps.detect.outputs.eslint == '' &&
+          steps.detect.outputs.stylelint == '' &&
+          steps.detect.outputs.package_lint == '' &&
+          steps.detect.outputs.unit_tests == ''
+        run: echo "::warning::No ESLint, Stylelint, package.json lint, or unit test script was found. No JavaScript checks ran."
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ format('{0}', inputs.node-version) }}
+          cache: 'npm'
+          cache-dependency-path: ${{ format('{0}/package-lock.json', inputs.working-directory) }}
+
+      # `npm ci` rather than `npm install`, so a lockfile that has drifted out
+      # of sync fails here instead of silently rewriting itself.
+      - name: Install Node dependencies
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.npm-auth-token }}
+        run: npm ci
+
+      # From here every check uses `!cancelled()` so that a failure in one does
+      # not hide the results of the others, and `continue-on-error` so that the
+      # job reaches the summary. The summary step is what fails the job.
+      - name: ESLint
+        id: eslint
+        if: ${{ !cancelled() && steps.detect.outputs.eslint != '' }}
+        continue-on-error: true
+        run: ${{ steps.detect.outputs.eslint }}
+
+      - name: Stylelint
+        id: stylelint
+        if: ${{ !cancelled() && steps.detect.outputs.stylelint != '' }}
+        continue-on-error: true
+        run: ${{ steps.detect.outputs.stylelint }}
+
+      - name: Lint package.json
+        id: package_lint
+        if: ${{ !cancelled() && steps.detect.outputs.package_lint != '' }}
+        continue-on-error: true
+        run: ${{ steps.detect.outputs.package_lint }}
+
+      - name: Unit tests
+        id: unit_tests
+        if: ${{ !cancelled() && steps.detect.outputs.unit_tests != '' }}
+        continue-on-error: true
+        run: ${{ steps.detect.outputs.unit_tests }}
+
+      # Report each check's result and fail the job if any of them failed.
+      - name: Summarize
+        if: ${{ !cancelled() }}
+        run: |
+          failed=0
+
+          {
+            echo "### JavaScript checks"
+            echo ""
+            echo "| Check | Result |"
+            echo "| --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          summarize() {
+            local label="$1"
+            local outcome="$2"
+            local result
+
+            case "$outcome" in
+              success) result="Passed" ;;
+              failure) result="**Failed**"; failed=1 ;;
+              *)       result="Not configured" ;;
+            esac
+
+            echo "| $label | $result |" >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          summarize "ESLint" "${{ steps.eslint.outcome }}"
+          summarize "Stylelint" "${{ steps.stylelint.outcome }}"
+          summarize "package.json" "${{ steps.package_lint.outcome }}"
+          summarize "Unit tests" "${{ steps.unit_tests.outcome }}"
+
+          exit $failed
