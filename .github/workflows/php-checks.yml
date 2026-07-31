@@ -173,6 +173,13 @@ jobs:
       # that have no PHPUnit configuration, and pays for an image pull the runner
       # image has already done. Start the preinstalled server instead, falling
       # back to a container if a future image drops it.
+      #
+      # The WordPress test suite installs a fresh database and wraps every test
+      # in a transaction it rolls back, so the server's durability settings
+      # dominate the run far more than start-up time does. Measured untuned, the
+      # preinstalled server ran a 997 test suite 2 to 3 times slower than the
+      # container it replaced. None of this data outlives the job, so all of that
+      # durability is traded away.
       - name: Start MySQL
         if: steps.available.outputs.phpunit == 'true'
         run: |
@@ -181,7 +188,22 @@ jobs:
               --user="$DB_USER" --password="$DB_PASS" --silent > /dev/null 2>&1
           }
 
-          sudo systemctl start mysql > /dev/null 2>&1 || sudo service mysql start > /dev/null 2>&1 || true
+          tuning='
+          [mysqld]
+          skip-log-bin
+          sync_binlog = 0
+          innodb_flush_log_at_trx_commit = 0
+          innodb_doublewrite = 0
+          innodb_flush_method = nosync
+          innodb_buffer_pool_size = 1G
+          '
+
+          if [ -d /etc/mysql ]; then
+            sudo mkdir -p /etc/mysql/conf.d
+            echo "$tuning" | sudo tee /etc/mysql/conf.d/zz-ci-throughput.cnf > /dev/null
+          fi
+
+          sudo systemctl restart mysql > /dev/null 2>&1 || sudo service mysql restart > /dev/null 2>&1 || true
 
           for _ in $(seq 1 15); do
             if ready; then
@@ -191,12 +213,17 @@ jobs:
             sleep 1
           done
 
-          echo "::warning::No usable preinstalled MySQL. Falling back to a container, which is slower."
+          echo "::warning::No usable preinstalled MySQL. Falling back to a container."
 
           docker run --name wp-tests-db -d \
             -e MYSQL_ROOT_PASSWORD="$DB_PASS" \
             -p 3306:3306 \
-            mysql:latest
+            --tmpfs /var/lib/mysql:rw,noexec,nosuid,size=2g \
+            mysql:latest \
+            --skip-log-bin \
+            --sync-binlog=0 \
+            --innodb-flush-log-at-trx-commit=0 \
+            --innodb-doublewrite=0
 
           for _ in $(seq 1 60); do
             if ready; then
