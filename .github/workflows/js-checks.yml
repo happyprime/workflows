@@ -1,0 +1,296 @@
+name: JavaScript checks
+
+# Runs every configured JavaScript and CSS check in a single job so that
+# checkout, Node setup, and `npm ci` are paid for once rather than once per
+# check.
+#
+# A check runs when the project defines a script for it and, where the tool
+# requires one, a configuration file exists. When a project is set up for a
+# check that cannot actually run, the check is skipped and reported on the pull
+# request rather than failed.
+#
+# Checks that do run all run, even when an earlier one fails, so a single push
+# reports every problem at once.
+#
+# Build verification stays in verify-build.yml. It answers a different question
+# — whether committed build output matches source — and applies to projects
+# that ship CSS with no JavaScript checks at all.
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: number
+        description: 'Node version to use.'
+        required: false
+        default: 24
+      working-directory:
+        type: string
+        description: 'Working directory for the Node project.'
+        required: false
+        default: '.'
+      skip:
+        type: string
+        description: 'Space separated checks to skip even when configured: eslint, stylelint, npmpackagejsonlint, unit_tests.'
+        required: false
+        default: ''
+    secrets:
+      npm-auth-token:
+        description: 'Token for private npm packages'
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  UNAVAILABLE: /tmp/unavailable-js-checks
+
+jobs:
+  js-checks:
+    name: JavaScript checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Each check runs through the project's own npm script rather than a
+      # command assembled here, because the tools are not consistently declared
+      # as direct dependencies — several projects lint with a binary that only
+      # arrives transitively, which `npx` cannot be relied on to find.
+      #
+      # Script naming is not yet consistent across our repositories either, so
+      # each check accepts the aliases currently in use.
+      #
+      # A project that has one half of a check but not the other — a config with
+      # no script, or a script whose tool needs a config that is missing — has
+      # that check recorded as unavailable rather than run.
+      - name: Detect configuration
+        id: detect
+        run: |
+          skip=" ${{ inputs.skip }} "
+          : > "$UNAVAILABLE"
+
+          has_script() {
+            [ -f package.json ] && [ "$(jq -r --arg s "$1" '.scripts[$s] // empty' package.json)" != "" ]
+          }
+
+          has_config() {
+            for file in $1; do
+              if [ -f "$file" ]; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          has_package_key() {
+            [ -f package.json ] && [ "$(jq -r --arg k "$1" '.[$k] // empty' package.json)" != "" ]
+          }
+
+          # resolve <name> <label> "<npm script aliases>" "<config files>" <config required>
+          resolve() {
+            local name="$1" label="$2" scripts="$3" configs="$4" needs_config="$5"
+            local script=""
+
+            case "$skip" in
+              *" $name "*) return ;;
+            esac
+
+            for candidate in $scripts; do
+              if has_script "$candidate"; then
+                script="$candidate"
+                break
+              fi
+            done
+
+            if [ -z "$script" ]; then
+              if has_config "$configs"; then
+                echo "::warning::$label has configuration but no npm script named one of: $scripts. Skipping."
+                echo "$label|Configured, but no npm script named one of \`${scripts// /\`, \`}\`." >> "$UNAVAILABLE"
+              fi
+              return
+            fi
+
+            if [ "$needs_config" = "true" ] && ! has_config "$configs" && ! has_package_key "$name"; then
+              echo "::warning::$label has an npm script but no configuration. Skipping."
+              echo "$label|The \`$script\` script exists, but $label has no configuration file." >> "$UNAVAILABLE"
+              return
+            fi
+
+            echo "$name=npm run $script" >> "$GITHUB_OUTPUT"
+          }
+
+          resolve eslint ESLint "lint lint:js" \
+            "eslint.config.js eslint.config.mjs eslint.config.cjs .eslintrc .eslintrc.js .eslintrc.json" false
+
+          resolve stylelint Stylelint "lint:css lint:style" \
+            "stylelint.config.js .stylelintrc .stylelintrc.js .stylelintrc.json" false
+
+          # npm-package-json-lint exits non-zero when it finds no configuration,
+          # so a project with the script and no config would fail rather than
+          # skip. Its config may also live under a package.json key.
+          resolve npmpackagejsonlint "package.json lint" "lint:package lint:pkg-json" \
+            ".npmpackagejsonlintrc.json .npmpackagejsonlintrc npmpackagejsonlint.config.js" true
+
+          # Matched by exact name so that test:e2e, test:php, and test:watch are
+          # never picked up. Not every project uses Vitest — calendar-blocks
+          # runs Jest — so this check is named for what it does, not the tool.
+          resolve unit_tests "Unit tests" "test test:js" \
+            "vitest.config.js vitest.config.ts vitest.config.mjs jest.config.js" false
+
+      - name: Warn when nothing is configured
+        if: >-
+          steps.detect.outputs.eslint == '' &&
+          steps.detect.outputs.stylelint == '' &&
+          steps.detect.outputs.npmpackagejsonlint == '' &&
+          steps.detect.outputs.unit_tests == ''
+        run: echo "::warning::No ESLint, Stylelint, package.json lint, or unit test script was found. No JavaScript checks ran."
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ format('{0}', inputs.node-version) }}
+          cache: 'npm'
+          cache-dependency-path: ${{ format('{0}/package-lock.json', inputs.working-directory) }}
+
+      # `npm ci` rather than `npm install`, so a lockfile that has drifted out
+      # of sync fails here instead of silently rewriting itself.
+      - name: Install Node dependencies
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.npm-auth-token }}
+        run: npm ci
+
+      # From here every check uses `!cancelled()` so that a failure in one does
+      # not hide the results of the others, and `continue-on-error` so that the
+      # job reaches the summary. The summary step is what fails the job.
+      - name: ESLint
+        id: eslint
+        if: ${{ !cancelled() && steps.detect.outputs.eslint != '' }}
+        continue-on-error: true
+        run: ${{ steps.detect.outputs.eslint }}
+
+      - name: Stylelint
+        id: stylelint
+        if: ${{ !cancelled() && steps.detect.outputs.stylelint != '' }}
+        continue-on-error: true
+        run: ${{ steps.detect.outputs.stylelint }}
+
+      - name: Lint package.json
+        id: npmpackagejsonlint
+        if: ${{ !cancelled() && steps.detect.outputs.npmpackagejsonlint != '' }}
+        continue-on-error: true
+        run: ${{ steps.detect.outputs.npmpackagejsonlint }}
+
+      - name: Unit tests
+        id: unit_tests
+        if: ${{ !cancelled() && steps.detect.outputs.unit_tests != '' }}
+        continue-on-error: true
+        run: ${{ steps.detect.outputs.unit_tests }}
+
+      # Report each check's result and fail the job if any of them failed. A
+      # check that was set up but could not run is not a failure.
+      - name: Summarize
+        if: ${{ !cancelled() }}
+        run: |
+          failed=0
+
+          {
+            echo "### JavaScript checks"
+            echo ""
+            echo "| Check | Result |"
+            echo "| --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          summarize() {
+            local label="$1"
+            local outcome="$2"
+            local result
+
+            case "$outcome" in
+              success)
+                result="Passed"
+                ;;
+              failure)
+                result="**Failed**"
+                failed=1
+                ;;
+              *)
+                if grep -q "^$label|" "$UNAVAILABLE" 2> /dev/null; then
+                  result="Skipped, not available"
+                else
+                  result="Not configured"
+                fi
+                ;;
+            esac
+
+            echo "| $label | $result |" >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          summarize "ESLint" "${{ steps.eslint.outcome }}"
+          summarize "Stylelint" "${{ steps.stylelint.outcome }}"
+          summarize "package.json lint" "${{ steps.npmpackagejsonlint.outcome }}"
+          summarize "Unit tests" "${{ steps.unit_tests.outcome }}"
+
+          if [ -s "$UNAVAILABLE" ]; then
+            {
+              echo ""
+              echo "Skipped because the project is only half set up for them:"
+              echo ""
+              sed 's/^\([^|]*\)|\(.*\)$/- **\1** — \2/' "$UNAVAILABLE"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          exit $failed
+
+      # Keep one comment on the pull request listing checks that were set up but
+      # could not run, so that a green build does not quietly hide missing
+      # coverage. The comment is removed once nothing is missing.
+      - name: Report unavailable checks
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- happyprime-js-checks-unavailable -->';
+            const path = process.env.UNAVAILABLE;
+
+            const lines = fs.existsSync(path)
+              ? fs.readFileSync(path, 'utf8').split('\n').filter(Boolean)
+              : [];
+
+            const body = lines.length
+              ? [
+                  marker,
+                  '### JavaScript checks that did not run',
+                  '',
+                  ...lines.map((line) => {
+                    const [name, reason] = line.split('|');
+                    return `- **${name}** — ${reason}`;
+                  }),
+                  '',
+                  'These were skipped rather than failed. Finish setting them up or remove what is left behind.',
+                ].join('\n')
+              : null;
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+            });
+            const existing = comments.find((comment) => comment.body && comment.body.includes(marker));
+
+            if (body && existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else if (body) {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            } else if (existing) {
+              await github.rest.issues.deleteComment({ owner, repo, comment_id: existing.id });
+            }

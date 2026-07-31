@@ -1,0 +1,441 @@
+name: PHP checks
+
+# Runs every configured PHP check in a single job so that checkout, PHP setup,
+# and `composer install` are paid for once rather than once per check.
+#
+# A check runs when its configuration file is present and its binary is
+# installed. When a project is configured for a check it cannot actually run,
+# the check is skipped and reported on the pull request rather than failed.
+#
+# Checks that do run all run, even when an earlier one fails, so a single push
+# reports every problem at once.
+
+on:
+  workflow_call:
+    inputs:
+      php-version:
+        type: string
+        description: 'PHP version to use.'
+        required: false
+        default: '8.4'
+      working-directory:
+        type: string
+        description: 'Working directory for the PHP project.'
+        required: false
+        default: '.'
+      wp-versions:
+        type: string
+        description: 'Space separated WordPress versions for PHPUnit to test against. e.g. "latest trunk".'
+        required: false
+        default: 'latest'
+      skip:
+        type: string
+        description: 'Space separated checks to skip even when configured: phpcs, phpstan, phpunit.'
+        required: false
+        default: ''
+    secrets:
+      composer-auth-token:
+        description: 'GitHub token for private Composer dependencies'
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  DB_USER: root
+  DB_PASS: root
+  DB_HOST: 127.0.0.1:3306
+  UNAVAILABLE: /tmp/unavailable-php-checks
+
+jobs:
+  php-checks:
+    name: PHP checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Detect which checks this project has configured. Config file naming is
+      # inconsistent across our repositories, so each check looks for every
+      # spelling we currently use.
+      - name: Detect configuration
+        id: detect
+        run: |
+          skip=" ${{ inputs.skip }} "
+
+          detect() {
+            local name="$1"
+            shift
+            case "$skip" in
+              *" $name "*) echo "false"; return ;;
+            esac
+            for file in "$@"; do
+              if [ -f "$file" ]; then
+                echo "true"
+                return
+              fi
+            done
+            echo "false"
+          }
+
+          {
+            echo "phpcs=$(detect phpcs phpcs.xml phpcs.xml.dist .phpcs.xml .phpcs.xml.dist)"
+            echo "phpstan=$(detect phpstan phpstan.neon phpstan.neon.dist phpstan.dist.neon)"
+            echo "phpunit=$(detect phpunit phpunit.xml phpunit.xml.dist .phpunit.xml.dist)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Warn when nothing is configured
+        if: >-
+          steps.detect.outputs.phpcs == 'false' &&
+          steps.detect.outputs.phpstan == 'false' &&
+          steps.detect.outputs.phpunit == 'false'
+        run: echo "::warning::No PHPCS, PHPStan, or PHPUnit configuration was found. No PHP checks ran."
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          coverage: none
+          extensions: ${{ steps.detect.outputs.phpunit == 'true' && 'mysqli' || '' }}
+          tools: composer, cs2pr
+
+      - name: Cache Composer
+        id: cache-composer
+        run: |
+          echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.cache-composer.outputs.dir }}
+          key: ${{ runner.os }}-composer-${{ hashFiles(format('{0}/composer.lock', inputs.working-directory)) }}
+          restore-keys: |
+            ${{ runner.os }}-composer-
+
+      - name: Install dependencies
+        env:
+          COMPOSER_AUTH: ${{ secrets.composer-auth-token && format('{{"github-oauth":{{"github.com":"{0}"}}}}', secrets.composer-auth-token) || '' }}
+        run: |
+          composer install --prefer-dist --no-progress
+
+      # A configuration file with no matching binary means the tool was never
+      # added to require-dev. Skip the check and record why, rather than failing
+      # the job with a "command not found" that reads like a code problem.
+      - name: Resolve available checks
+        id: available
+        run: |
+          : > "$UNAVAILABLE"
+
+          phpcs=false
+          if [ "${{ steps.detect.outputs.phpcs }}" = "true" ]; then
+            if [ -x vendor/bin/phpcs ]; then
+              phpcs=true
+            else
+              echo "::warning::PHPCS is configured but vendor/bin/phpcs is not installed. Skipping."
+              echo "PHPCS|\`vendor/bin/phpcs\` is not installed. Add it to \`require-dev\`." >> "$UNAVAILABLE"
+            fi
+          fi
+
+          phpstan=false
+          if [ "${{ steps.detect.outputs.phpstan }}" = "true" ]; then
+            if [ -x vendor/bin/phpstan ]; then
+              phpstan=true
+            else
+              echo "::warning::PHPStan is configured but vendor/bin/phpstan is not installed. Skipping."
+              echo "PHPStan|\`vendor/bin/phpstan\` is not installed. Add it to \`require-dev\`." >> "$UNAVAILABLE"
+            fi
+          fi
+
+          phpunit=false
+          if [ "${{ steps.detect.outputs.phpunit }}" = "true" ]; then
+            if [ ! -x vendor/bin/phpunit ]; then
+              echo "::warning::PHPUnit is configured but vendor/bin/phpunit is not installed. Skipping."
+              echo "PHPUnit|\`vendor/bin/phpunit\` is not installed. Add it to \`require-dev\`." >> "$UNAVAILABLE"
+            elif [ ! -f bin/install-wp-tests.sh ]; then
+              echo "::warning::PHPUnit is configured but bin/install-wp-tests.sh is missing. Skipping."
+              echo "PHPUnit|\`bin/install-wp-tests.sh\` is missing from the repository." >> "$UNAVAILABLE"
+            else
+              phpunit=true
+            fi
+          fi
+
+          {
+            echo "phpcs=$phpcs"
+            echo "phpstan=$phpstan"
+            echo "phpunit=$phpunit"
+          } >> "$GITHUB_OUTPUT"
+
+      # A `services:` container would start for every caller, including the many
+      # that have no PHPUnit configuration, and pays for an image pull the runner
+      # image has already done. Start the preinstalled server instead, falling
+      # back to a container if a future image drops it.
+      #
+      # The WordPress test suite installs a fresh database and wraps every test
+      # in a transaction it rolls back, so the server's durability settings
+      # dominate the run far more than start-up time does. Measured untuned, the
+      # preinstalled server ran a 997 test suite 2 to 3 times slower than the
+      # container it replaced. None of this data outlives the job, so all of that
+      # durability is traded away.
+      - name: Start MySQL
+        if: steps.available.outputs.phpunit == 'true'
+        run: |
+          ready() {
+            mysqladmin ping --protocol=tcp --host=127.0.0.1 --port=3306 \
+              --user="$DB_USER" --password="$DB_PASS" --silent > /dev/null 2>&1
+          }
+
+          tuning='
+          [mysqld]
+          skip-log-bin
+          sync_binlog = 0
+          innodb_flush_log_at_trx_commit = 0
+          innodb_doublewrite = 0
+          innodb_flush_method = nosync
+          innodb_buffer_pool_size = 1G
+          '
+
+          if [ -d /etc/mysql ]; then
+            sudo mkdir -p /etc/mysql/conf.d
+            echo "$tuning" | sudo tee /etc/mysql/conf.d/zz-ci-throughput.cnf > /dev/null
+          fi
+
+          sudo systemctl restart mysql > /dev/null 2>&1 || sudo service mysql restart > /dev/null 2>&1 || true
+
+          for _ in $(seq 1 15); do
+            if ready; then
+              echo "Using the MySQL server preinstalled on the runner image."
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "::warning::No usable preinstalled MySQL. Falling back to a container."
+
+          docker run --name wp-tests-db -d \
+            -e MYSQL_ROOT_PASSWORD="$DB_PASS" \
+            -p 3306:3306 \
+            --tmpfs /var/lib/mysql:rw,noexec,nosuid,size=2g \
+            mysql:latest \
+            --skip-log-bin \
+            --sync-binlog=0 \
+            --innodb-flush-log-at-trx-commit=0 \
+            --innodb-doublewrite=0
+
+          for _ in $(seq 1 60); do
+            if ready; then
+              echo "Using a MySQL container."
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "::error::MySQL did not become ready in time."
+          exit 1
+
+      # install-wp-tests.sh reaches for Subversion twice: for core when the
+      # version is trunk, and for the test suite on every version. Both
+      # directories are populated from tarballs here, which makes the script skip
+      # those branches and removes an `apt-get install subversion` from every run.
+      #
+      # Each WordPress version gets its own core directory, test directory, and
+      # database. install-wp-tests.sh drops and recreates the database it is
+      # given, so sharing one name across versions would destroy the first
+      # suite's tables while the second installs.
+      - name: Install WordPress test suites
+        if: steps.available.outputs.phpunit == 'true'
+        run: |
+          latest="$(curl -fsSL https://api.wordpress.org/core/version-check/1.7/ | jq -r '.offers[0].version')"
+
+          for version in ${{ inputs.wp-versions }}; do
+            slug="${version//[^[:alnum:]]/-}"
+            core="/tmp/wp-core-$slug"
+            tests="/tmp/wp-tests-$slug"
+            work="/tmp/wp-develop-$slug"
+
+            echo "::group::Install WordPress $version"
+            mkdir -p "$core" "$tests" "$work"
+
+            if [ "$version" = "trunk" ] || [ "$version" = "nightly" ]; then
+              # The nightly build is a built artifact. wordpress-develop's src
+              # directory is not, and lacks compiled assets some tests read.
+              curl -fsSL https://wordpress.org/nightly-builds/wordpress-latest.zip -o "$work/core.zip"
+              unzip -q "$work/core.zip" -d "$work/core"
+              mv "$work"/core/wordpress/* "$core"
+              archive="https://github.com/WordPress/wordpress-develop/archive/refs/heads/trunk.tar.gz"
+            else
+              resolved="$version"
+              [ "$version" = "latest" ] && resolved="$latest"
+
+              curl -fsSL "https://wordpress.org/wordpress-${resolved}.tar.gz" \
+                | tar --strip-components=1 -xzf - -C "$core"
+
+              archive="https://github.com/WordPress/wordpress-develop/archive/refs/tags/${resolved}.tar.gz"
+            fi
+
+            if ! curl -fsSL "$archive" -o "$work/develop.tar.gz"; then
+              # A version like 6.9.0 is tagged as 6.9, matching the fallback
+              # install-wp-tests.sh applies when it resolves core archives.
+              archive="https://github.com/WordPress/wordpress-develop/archive/refs/tags/${resolved%.0}.tar.gz"
+
+              if ! curl -fsSL "$archive" -o "$work/develop.tar.gz"; then
+                echo "::error::Could not download the WordPress develop archive for $version."
+                exit 1
+              fi
+            fi
+
+            tar -xzf "$work/develop.tar.gz" -C "$work" --strip-components=1 --wildcards \
+              '*/tests/phpunit/includes/*' '*/tests/phpunit/data/*'
+
+            mv "$work/tests/phpunit/includes" "$tests/includes"
+            mv "$work/tests/phpunit/data" "$tests/data"
+
+            # Both directories now exist, so the script only writes the test
+            # config and creates the database.
+            WP_CORE_DIR="$core" WP_TESTS_DIR="$tests" \
+              bash bin/install-wp-tests.sh "wp_tests_$slug" "$DB_USER" "$DB_PASS" "$DB_HOST" "$version"
+
+            echo "::endgroup::"
+          done
+
+      # From here every check uses `!cancelled()` so that a failure in one does
+      # not hide the results of the others, and `continue-on-error` so that the
+      # job reaches the summary. The summary step is what fails the job.
+      - name: PHPCS
+        id: phpcs
+        if: ${{ !cancelled() && steps.available.outputs.phpcs == 'true' }}
+        continue-on-error: true
+        run: vendor/bin/phpcs -q --report=checkstyle . | cs2pr --notices-as-warnings
+
+      - name: PHPStan
+        id: phpstan
+        if: ${{ !cancelled() && steps.available.outputs.phpstan == 'true' }}
+        continue-on-error: true
+        run: vendor/bin/phpstan analyse --no-progress --error-format=github
+
+      - name: PHPUnit
+        id: phpunit
+        if: ${{ !cancelled() && steps.available.outputs.phpunit == 'true' }}
+        continue-on-error: true
+        run: |
+          status=0
+
+          for version in ${{ inputs.wp-versions }}; do
+            slug="${version//[^[:alnum:]]/-}"
+            echo "::group::PHPUnit against WordPress $version"
+
+            if ! WP_TESTS_DIR="/tmp/wp-tests-$slug" vendor/bin/phpunit; then
+              status=1
+              echo "::error::PHPUnit failed against WordPress $version."
+            fi
+
+            echo "::endgroup::"
+          done
+
+          exit $status
+
+      # Report each check's result and fail the job if any of them failed. A
+      # check that was configured but could not run is not a failure.
+      - name: Summarize
+        if: ${{ !cancelled() }}
+        run: |
+          failed=0
+
+          {
+            echo "### PHP checks"
+            echo ""
+            echo "| Check | Result |"
+            echo "| --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          summarize() {
+            local label="$1"
+            local outcome="$2"
+            local configured="$3"
+            local result
+
+            case "$outcome" in
+              success)
+                result="Passed"
+                ;;
+              failure)
+                result="**Failed**"
+                failed=1
+                ;;
+              *)
+                if [ "$configured" = "true" ]; then
+                  result="Skipped, not available"
+                else
+                  result="Not configured"
+                fi
+                ;;
+            esac
+
+            echo "| $label | $result |" >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          summarize "PHPCS" "${{ steps.phpcs.outcome }}" "${{ steps.detect.outputs.phpcs }}"
+          summarize "PHPStan" "${{ steps.phpstan.outcome }}" "${{ steps.detect.outputs.phpstan }}"
+          summarize "PHPUnit (${{ inputs.wp-versions }})" "${{ steps.phpunit.outcome }}" "${{ steps.detect.outputs.phpunit }}"
+
+          if [ -s "$UNAVAILABLE" ]; then
+            {
+              echo ""
+              echo "Skipped because the tooling is not installed:"
+              echo ""
+              sed 's/^\([^|]*\)|\(.*\)$/- **\1** — \2/' "$UNAVAILABLE"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          exit $failed
+
+      # Keep one comment on the pull request listing checks that were configured
+      # but could not run, so that a green build does not quietly hide missing
+      # coverage. The comment is removed once nothing is missing.
+      - name: Report unavailable checks
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- happyprime-php-checks-unavailable -->';
+            const path = process.env.UNAVAILABLE;
+
+            const lines = fs.existsSync(path)
+              ? fs.readFileSync(path, 'utf8').split('\n').filter(Boolean)
+              : [];
+
+            const body = lines.length
+              ? [
+                  marker,
+                  '### PHP checks that did not run',
+                  '',
+                  ...lines.map((line) => {
+                    const [name, reason] = line.split('|');
+                    return `- **${name}** — ${reason}`;
+                  }),
+                  '',
+                  'These were skipped rather than failed. Install the tooling or remove the configuration file.',
+                ].join('\n')
+              : null;
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+            });
+            const existing = comments.find((comment) => comment.body && comment.body.includes(marker));
+
+            if (body && existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else if (body) {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            } else if (existing) {
+              await github.rest.issues.deleteComment({ owner, repo, comment_id: existing.id });
+            }
