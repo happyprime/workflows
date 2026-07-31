@@ -28,6 +28,16 @@ on:
         description: 'Space separated WordPress versions for PHPUnit to test against. e.g. "latest trunk".'
         required: false
         default: 'latest'
+      build-command:
+        type: string
+        description: 'Command that builds assets before PHPUnit runs. Block plugins that register from a build directory need this, since block.json is read from there and not from source.'
+        required: false
+        default: ''
+      node-version:
+        type: number
+        description: 'Node version used to run build-command.'
+        required: false
+        default: 24
       skip:
         type: string
         description: 'Space separated checks to skip even when configured: phpcs, phpstan, phpunit.'
@@ -300,6 +310,22 @@ jobs:
 
             echo "::endgroup::"
           done
+
+      # Block plugins register block types by reading block.json out of a build
+      # directory, so their block tests render nothing until the assets exist.
+      - name: Setup Node
+        if: ${{ steps.available.outputs.phpunit == 'true' && inputs.build-command != '' }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ format('{0}', inputs.node-version) }}
+          cache: 'npm'
+          cache-dependency-path: ${{ format('{0}/package-lock.json', inputs.working-directory) }}
+
+      - name: Build assets
+        if: ${{ steps.available.outputs.phpunit == 'true' && inputs.build-command != '' }}
+        run: |
+          npm ci
+          ${{ inputs.build-command }}
 
       # From here every check uses `!cancelled()` so that a failure in one does
       # not hide the results of the others, and `continue-on-error` so that the
