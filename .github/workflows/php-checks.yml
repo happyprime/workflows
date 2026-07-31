@@ -173,10 +173,40 @@ jobs:
             fi
           fi
 
+          # Run through the project's own Composer script when it defines one.
+          # Those scripts carry arguments the binary alone does not: store-blocks
+          # needs `--runtime-set testVersion 8.1-` because happyprime/coding-
+          # standards pins testVersion to 7.4 and a consuming ruleset cannot
+          # override it, and every plugin raises PHPStan's memory limit.
+          has_composer_script() {
+            [ -f composer.json ] && [ "$(jq -r --arg s "$1" '.scripts[$s] // empty' composer.json)" != "" ]
+          }
+
+          if has_composer_script phpcs; then
+            phpcs_command='composer phpcs -- -q --report=checkstyle'
+          else
+            phpcs_command='vendor/bin/phpcs -q --report=checkstyle .'
+          fi
+
+          if has_composer_script phpstan; then
+            phpstan_command='composer phpstan -- --no-progress --error-format=github'
+          else
+            phpstan_command='vendor/bin/phpstan analyse --no-progress --error-format=github'
+          fi
+
+          if has_composer_script phpunit; then
+            phpunit_command='composer phpunit'
+          else
+            phpunit_command='vendor/bin/phpunit'
+          fi
+
           {
             echo "phpcs=$phpcs"
             echo "phpstan=$phpstan"
             echo "phpunit=$phpunit"
+            echo "phpcs_command=$phpcs_command"
+            echo "phpstan_command=$phpstan_command"
+            echo "phpunit_command=$phpunit_command"
           } >> "$GITHUB_OUTPUT"
 
       # A `services:` container would start for every caller, including the many
@@ -334,13 +364,13 @@ jobs:
         id: phpcs
         if: ${{ !cancelled() && steps.available.outputs.phpcs == 'true' }}
         continue-on-error: true
-        run: vendor/bin/phpcs -q --report=checkstyle . | cs2pr --notices-as-warnings
+        run: ${{ steps.available.outputs.phpcs_command }} | cs2pr --notices-as-warnings
 
       - name: PHPStan
         id: phpstan
         if: ${{ !cancelled() && steps.available.outputs.phpstan == 'true' }}
         continue-on-error: true
-        run: vendor/bin/phpstan analyse --no-progress --error-format=github
+        run: ${{ steps.available.outputs.phpstan_command }}
 
       - name: PHPUnit
         id: phpunit
@@ -353,7 +383,7 @@ jobs:
             slug="${version//[^[:alnum:]]/-}"
             echo "::group::PHPUnit against WordPress $version"
 
-            if ! WP_TESTS_DIR="/tmp/wp-tests-$slug" vendor/bin/phpunit; then
+            if ! WP_TESTS_DIR="/tmp/wp-tests-$slug" ${{ steps.available.outputs.phpunit_command }}; then
               status=1
               echo "::error::PHPUnit failed against WordPress $version."
             fi
