@@ -182,16 +182,18 @@ jobs:
             [ -f composer.json ] && [ "$(jq -r --arg s "$1" '.scripts[$s] // empty' composer.json)" != "" ]
           }
 
+          # Report formats are set by the steps that run these commands rather
+          # than here, so that the reasoning sits next to the flag.
           if has_composer_script phpcs; then
-            phpcs_command='composer phpcs -- -q --report=checkstyle'
+            phpcs_command='composer phpcs -- -q --report-full'
           else
-            phpcs_command='vendor/bin/phpcs -q --report=checkstyle .'
+            phpcs_command='vendor/bin/phpcs -q --report-full .'
           fi
 
           if has_composer_script phpstan; then
-            phpstan_command='composer phpstan -- --no-progress --error-format=github'
+            phpstan_command='composer phpstan -- --no-progress'
           else
-            phpstan_command='vendor/bin/phpstan analyse --no-progress --error-format=github'
+            phpstan_command='vendor/bin/phpstan analyse --no-progress'
           fi
 
           if has_composer_script phpunit; then
@@ -360,17 +362,39 @@ jobs:
       # From here every check uses `!cancelled()` so that a failure in one does
       # not hide the results of the others, and `continue-on-error` so that the
       # job reaches the summary. The summary step is what fails the job.
+      #
+      # PHPCS writes as many reports per run as it is given, so the full report
+      # goes to the log for reading and the checkstyle report goes to a file for
+      # cs2pr to turn into annotations. Piping checkstyle straight into cs2pr,
+      # as this used to, left the log empty.
       - name: PHPCS
         id: phpcs
         if: ${{ !cancelled() && steps.available.outputs.phpcs == 'true' }}
         continue-on-error: true
-        run: ${{ steps.available.outputs.phpcs_command }} | cs2pr --notices-as-warnings
+        run: |
+          report="$RUNNER_TEMP/phpcs-checkstyle.xml"
+          status=0
 
+          ${{ steps.available.outputs.phpcs_command }} --report-checkstyle="$report" || status=$?
+
+          # No report means PHPCS never got as far as analyzing anything, so its
+          # own exit code is the only thing worth reporting.
+          if [ ! -s "$report" ]; then
+            exit $status
+          fi
+
+          cs2pr --notices-as-warnings "$report"
+
+      # PHPStan annotates the diff on its own: CiDetectedErrorFormatter runs
+      # alongside whichever error format is chosen and emits `::error` for every
+      # error once it detects Actions. Asking for `github` on top of that, as
+      # this used to, only duplicated those annotations and replaced the table
+      # with output GitHub strips from the log, leaving nothing to read.
       - name: PHPStan
         id: phpstan
         if: ${{ !cancelled() && steps.available.outputs.phpstan == 'true' }}
         continue-on-error: true
-        run: ${{ steps.available.outputs.phpstan_command }}
+        run: ${{ steps.available.outputs.phpstan_command }} --error-format=table
 
       - name: PHPUnit
         id: phpunit
