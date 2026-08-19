@@ -319,9 +319,9 @@ jobs:
             fi
 
             if ! curl -fsSL "$archive" -o "$work/develop.tar.gz"; then
-              # A version like 6.9.0 is tagged as 6.9, matching the fallback
-              # install-wp-tests.sh applies when it resolves core archives.
-              archive="https://github.com/WordPress/wordpress-develop/archive/refs/tags/${resolved%.0}.tar.gz"
+              # The version-check API reports a .0 release as x.y, but every
+              # wordpress-develop tag carries all three parts. 7.1 is 7.1.0.
+              archive="https://github.com/WordPress/wordpress-develop/archive/refs/tags/${resolved}.0.tar.gz"
 
               if ! curl -fsSL "$archive" -o "$work/develop.tar.gz"; then
                 echo "::error::Could not download the WordPress develop archive for $version."
