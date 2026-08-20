@@ -315,18 +315,22 @@ jobs:
               curl -fsSL "https://wordpress.org/wordpress-${resolved}.tar.gz" \
                 | tar --strip-components=1 -xzf - -C "$core"
 
-              archive="https://github.com/WordPress/wordpress-develop/archive/refs/tags/${resolved}.tar.gz"
+              develop_tag="$resolved"
+              if [[ "$resolved" =~ ^[0-9]+\.[0-9]+$ ]]; then
+                # The version-check API reports a .0 release as x.y, but every
+                # wordpress-develop tag carries all three parts. 7.1 is 7.1.0.
+                develop_tag="${resolved}.0"
+              elif [[ ! "$resolved" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "::error::Unsupported WordPress version format: $version."
+                exit 1
+              fi
+
+              archive="https://github.com/WordPress/wordpress-develop/archive/refs/tags/${develop_tag}.tar.gz"
             fi
 
             if ! curl -fsSL "$archive" -o "$work/develop.tar.gz"; then
-              # The version-check API reports a .0 release as x.y, but every
-              # wordpress-develop tag carries all three parts. 7.1 is 7.1.0.
-              archive="https://github.com/WordPress/wordpress-develop/archive/refs/tags/${resolved}.0.tar.gz"
-
-              if ! curl -fsSL "$archive" -o "$work/develop.tar.gz"; then
-                echo "::error::Could not download the WordPress develop archive for $version."
-                exit 1
-              fi
+              echo "::error::Could not download the WordPress develop archive for $version."
+              exit 1
             fi
 
             tar -xzf "$work/develop.tar.gz" -C "$work" --strip-components=1 --wildcards \
