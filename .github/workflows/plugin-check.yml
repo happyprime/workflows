@@ -133,7 +133,7 @@ jobs:
           cat "${{ runner.temp }}/plugin-check-result.json"
 
       - name: Report results on the pull request
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           RESULT_PATH: ${{ runner.temp }}/plugin-check-result.json
           CATEGORIES: ${{ inputs.categories }}
