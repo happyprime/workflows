@@ -125,7 +125,11 @@ jobs:
             echo "$name=npm run $script" >> "$GITHUB_OUTPUT"
           }
 
-          resolve eslint ESLint "lint lint:js" \
+          # `lint:js` is preferred over `lint`, because on several projects
+          # `lint` is a composite that also runs the CSS lint. Picking it up
+          # here would run Stylelint twice and report its failures under the
+          # ESLint check.
+          resolve eslint ESLint "lint:js lint" \
             "eslint.config.js eslint.config.mjs eslint.config.cjs .eslintrc .eslintrc.js .eslintrc.json" false
 
           resolve stylelint Stylelint "lint:css lint:style" \
@@ -180,11 +184,85 @@ jobs:
         continue-on-error: true
         run: ${{ steps.detect.outputs.stylelint }}
 
+      # ESLint, Stylelint, and the PHP checks all annotate the lines they fail
+      # on. npm-package-json-lint has no GitHub reporter and names the offending
+      # package.json node rather than a line, so its output is captured here and
+      # mapped back onto the file by the step below.
       - name: Lint package.json
         id: npmpackagejsonlint
         if: ${{ !cancelled() && steps.detect.outputs.npmpackagejsonlint != '' }}
         continue-on-error: true
-        run: ${{ steps.detect.outputs.npmpackagejsonlint }}
+        run: |
+          set -o pipefail
+          ${{ steps.detect.outputs.npmpackagejsonlint }} 2>&1 \
+            | tee "$RUNNER_TEMP/package-json-lint.log"
+
+      - name: Annotate package.json lint results
+        if: ${{ !cancelled() && steps.npmpackagejsonlint.outcome == 'failure' }}
+        uses: actions/github-script@v8
+        env:
+          LINT_LOG: ${{ runner.temp }}/package-json-lint.log
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            if (!fs.existsSync(process.env.LINT_LOG)) {
+              return;
+            }
+
+            // Releases differ on whether they mark a line with a symbol or a
+            // word, so both spellings are matched.
+            const issue = /^\s*(?:✖|×|⚠|ERROR|WARNING)\s+(\S+)\s+-\s+node:\s+(\S+)\s+-\s+(.*?)\s*$/;
+            const heading = /(^|\/)package\.json\s*$/;
+
+            const lines = fs.readFileSync(process.env.LINT_LOG, 'utf8').split('\n');
+            const root = process.env.WORKING_DIRECTORY || '.';
+
+            // package.json is only read once per file it reports on, and only
+            // to turn a node name into the line that declares it.
+            const cache = new Map();
+            const lineOf = (file, node) => {
+              if (!cache.has(file)) {
+                try {
+                  cache.set(file, fs.readFileSync(file, 'utf8').split('\n'));
+                } catch {
+                  cache.set(file, null);
+                }
+              }
+              const source = cache.get(file);
+              if (!source) {
+                return 1;
+              }
+              const declaration = new RegExp(`^\\s*"${node}"\\s*:`);
+              const index = source.findIndex((line) => declaration.test(line));
+              // A rule reporting a node that is missing entirely has nothing to
+              // point at, so it lands on the opening brace.
+              return index === -1 ? 1 : index + 1;
+            };
+
+            let file = path.join(root, 'package.json');
+
+            for (const line of lines) {
+              const match = line.match(issue);
+
+              if (!match) {
+                if (heading.test(line) && !issue.test(line)) {
+                  file = path.normalize(path.join(root, line.trim()));
+                }
+                continue;
+              }
+
+              const [, rule, node, message] = match;
+              const level = /⚠|WARNING/.test(line) ? 'warning' : 'error';
+
+              core[level](`${message} (${rule})`, {
+                title: `package.json lint: ${rule}`,
+                file,
+                startLine: lineOf(file, node),
+              });
+            }
 
       - name: Unit tests
         id: unit_tests
