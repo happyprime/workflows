@@ -68,7 +68,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # Detect which checks this project has configured. Config file naming is
       # inconsistent across our repositories, so each check looks for every
