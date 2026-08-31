@@ -40,7 +40,7 @@ on:
         default: 24
       skip:
         type: string
-        description: 'Space separated checks to skip even when configured: phpcs, phpstan, phpunit.'
+        description: 'Space separated checks to skip even when configured: composer-validate, phpcs, phpstan, phpunit.'
         required: false
         default: ''
     secrets:
@@ -94,6 +94,7 @@ jobs:
           }
 
           {
+            echo "composer_validate=$(detect composer-validate composer.json)"
             echo "phpcs=$(detect phpcs phpcs.xml phpcs.xml.dist .phpcs.xml .phpcs.xml.dist)"
             echo "phpstan=$(detect phpstan phpstan.neon phpstan.neon.dist phpstan.dist.neon)"
             echo "phpunit=$(detect phpunit phpunit.xml phpunit.xml.dist .phpunit.xml.dist)"
@@ -104,7 +105,7 @@ jobs:
           steps.detect.outputs.phpcs == 'false' &&
           steps.detect.outputs.phpstan == 'false' &&
           steps.detect.outputs.phpunit == 'false'
-        run: echo "::warning::No PHPCS, PHPStan, or PHPUnit configuration was found. No PHP checks ran."
+        run: echo "::warning::No PHPCS, PHPStan, or PHPUnit configuration was found."
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -113,6 +114,23 @@ jobs:
           coverage: none
           extensions: ${{ steps.detect.outputs.phpunit == 'true' && 'mysqli' || '' }}
           tools: composer, cs2pr
+
+      # Validate before installing. A stale lock only warns during `composer
+      # install`, and a malformed composer.json fails it outright with an error
+      # that reads like a runner problem, so neither reaches the summary as a
+      # check result. This is also the one check that needs no vendor
+      # directory, so it costs nothing to run as soon as Composer exists.
+      #
+      # `--strict` is what promotes warnings to failures: a `version` field, a
+      # license that is not a valid SPDX identifier, unbound `*` constraints.
+      # The lock check is not part of it. Plain `composer validate` already
+      # fails when the lock's content-hash no longer matches composer.json,
+      # which a version bump alone is enough to cause.
+      - name: Composer validate
+        id: composer-validate
+        if: ${{ !cancelled() && steps.detect.outputs.composer_validate == 'true' }}
+        continue-on-error: true
+        run: composer validate --strict
 
       - name: Cache Composer
         id: cache-composer
@@ -363,9 +381,10 @@ jobs:
           npm ci
           ${{ inputs.build-command }}
 
-      # From here every check uses `!cancelled()` so that a failure in one does
-      # not hide the results of the others, and `continue-on-error` so that the
-      # job reaches the summary. The summary step is what fails the job.
+      # Every check, the ones below and Composer validate above, uses
+      # `!cancelled()` so that a failure in one does not hide the results of the
+      # others, and `continue-on-error` so that the job reaches the summary. The
+      # summary step is what fails the job.
       #
       # PHPCS writes as many reports per run as it is given, so the full report
       # goes to the log for reading and the checkstyle report goes to a file for
@@ -461,6 +480,7 @@ jobs:
             echo "| $label | $result |" >> "$GITHUB_STEP_SUMMARY"
           }
 
+          summarize "Composer validate" "${{ steps.composer-validate.outcome }}" "${{ steps.detect.outputs.composer_validate }}"
           summarize "PHPCS" "${{ steps.phpcs.outcome }}" "${{ steps.detect.outputs.phpcs }}"
           summarize "PHPStan" "${{ steps.phpstan.outcome }}" "${{ steps.detect.outputs.phpstan }}"
           summarize "PHPUnit (${{ inputs.wp-versions }})" "${{ steps.phpunit.outcome }}" "${{ steps.detect.outputs.phpunit }}"
