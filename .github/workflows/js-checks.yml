@@ -199,7 +199,7 @@ jobs:
 
       - name: Annotate package.json lint results
         if: ${{ !cancelled() && steps.npmpackagejsonlint.outcome == 'failure' }}
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           LINT_LOG: ${{ runner.temp }}/package-json-lint.log
           WORKING_DIRECTORY: ${{ inputs.working-directory }}
