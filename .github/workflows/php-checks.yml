@@ -369,7 +369,7 @@ jobs:
       # directory, so their block tests render nothing until the assets exist.
       - name: Setup Node
         if: ${{ steps.available.outputs.phpunit == 'true' && inputs.build-command != '' }}
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ format('{0}', inputs.node-version) }}
           cache: 'npm'
