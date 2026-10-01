@@ -1,0 +1,136 @@
+name: E2E tests
+
+# Runs a plugin's Playwright suite against a wp-env WordPress built from trunk,
+# then reports the result to Slack.
+#
+# The suite manages WordPress itself: Playwright's global setup starts wp-env
+# when nothing is listening on the configured port and stops it again in
+# teardown, so there is no separate env step below.
+#
+# Trunk comes from `.wp-env.override.json`, which wp-env merges over the
+# committed `.wp-env.json`. The project must gitignore it.
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: number
+        description: 'Node version to use.'
+        required: false
+        default: 24
+      php-version:
+        type: string
+        description: 'PHP version that runs Composer. Match the phpVersion in .wp-env.json.'
+        required: false
+        default: '8.3'
+      wp-core:
+        type: string
+        description: 'wp-env core source. Defaults to WordPress trunk.'
+        required: false
+        default: 'WordPress/WordPress#master'
+      setup-command:
+        type: string
+        description: 'Command run after the build and before the suite, e.g. to create a directory .wp-env.json maps.'
+        required: false
+        default: ''
+      slack-channel:
+        type: string
+        description: 'Slack channel ID to report the result to. No report when empty.'
+        required: false
+        default: ''
+    secrets:
+      composer-auth-token:
+        description: 'GitHub token for private Composer dependencies'
+        required: false
+      SLACK_BOT_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  playwright:
+    name: Playwright (WordPress ${{ inputs.wp-core }})
+    runs-on: ubuntu-latest
+    # A cold wp-env start pulls WordPress and the Docker images, so this is
+    # slower than the other checks. Runs take 8 to 11 minutes.
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ format('{0}', inputs.node-version) }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup PHP
+        if: ${{ hashFiles('composer.json') != '' }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          coverage: none
+          tools: composer
+
+      # Plugins autoload their classes through Composer and `vendor` is
+      # gitignored, so activation fatals without this. `--no-dev` is what the
+      # plugin ships.
+      - name: Install PHP dependencies
+        if: ${{ hashFiles('composer.json') != '' }}
+        env:
+          COMPOSER_AUTH: ${{ secrets.composer-auth-token && format('{{"github-oauth":{{"github.com":"{0}"}}}}', secrets.composer-auth-token) || '' }}
+        run: composer install --no-dev --prefer-dist --no-progress --optimize-autoloader
+
+      # Test the build as this commit produces it, not the committed copy.
+      - name: Build
+        run: npm run build
+
+      - name: Point wp-env at ${{ inputs.wp-core }}
+        run: |
+          jq -n --arg core "${{ inputs.wp-core }}" '{core: $core}' > .wp-env.override.json
+
+      - name: Project setup
+        if: ${{ inputs.setup-command != '' }}
+        run: ${{ inputs.setup-command }}
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run end-to-end tests
+        run: npm run test:e2e
+
+      # Traces and screenshots are kept on failure only, so that is the only
+      # time there is anything to upload.
+      - name: Upload the Playwright report
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            tests/e2e/playwright-report/
+            tests/e2e/test-results/
+          retention-days: 7
+
+      # Report only scheduled and manual runs. A pull request run is already
+      # reported on the pull request.
+      - name: Report to Slack
+        if: >-
+          ${{ !cancelled() && inputs.slack-channel != '' &&
+          (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+        uses: wearerequired/slack-messaging-action@v3
+        with:
+          bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
+          channel: ${{ inputs.slack-channel }}
+          payload: >-
+            {
+              "icon_emoji": ":performing_arts:",
+              "unfurl_links": false,
+              "unfurl_media": false,
+              "username": "Happy Prime E2E",
+              "text": "${{ job.status == 'success' && ':white_check_mark:' || ':large_red_square:' }} <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|E2E tests> for `${{ github.repository }}` against WordPress `${{ inputs.wp-core }}` ${{ job.status == 'success' && 'passed' || 'failed' }}."
+            }
