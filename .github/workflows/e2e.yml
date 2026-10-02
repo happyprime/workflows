@@ -53,7 +53,7 @@ jobs:
     name: Playwright (WordPress ${{ inputs.wp-core }})
     runs-on: ubuntu-latest
     # A cold wp-env start pulls WordPress and the Docker images, so this is
-    # slower than the other checks. Runs take 8 to 11 minutes.
+    # slower than the other checks. Runs take 5 to 12 minutes.
     timeout-minutes: 15
 
     steps:
@@ -101,7 +101,10 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
 
+      # A job that reaches its own timeout is cancelled, which skips the Slack
+      # report. A step timeout fails the step instead, so the report still goes.
       - name: Run end-to-end tests
+        timeout-minutes: 11
         run: npm run test:e2e
 
       # Traces and screenshots are kept on failure only, so that is the only
