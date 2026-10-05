@@ -11,6 +11,7 @@ jobs:
   phpunit:
     name: PHPUnit (PHP ${{ matrix.php }} with WordPress ${{ matrix.wordpress }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     services:
         database:

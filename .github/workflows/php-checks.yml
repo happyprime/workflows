@@ -62,6 +62,7 @@ jobs:
   php-checks:
     name: PHP checks
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
@@ -296,6 +297,43 @@ jobs:
           echo "::error::MySQL did not become ready in time."
           exit 1
 
+      # A release never changes, so its key is its version number. Trunk does,
+      # so its key changes every hour: runs close together share one download
+      # without testing against a stale trunk for long.
+      #
+      # A cache saved on a pull request branch is only visible to that branch.
+      # These checks do not run on trunk, so each pull request fills its own.
+      - name: Resolve WordPress versions
+        id: wp-versions
+        if: steps.available.outputs.phpunit == 'true'
+        run: |
+          latest="$(curl -fsSL https://api.wordpress.org/core/version-check/1.7/ | jq -r '.offers[0].version')"
+          key=""
+
+          for version in ${{ inputs.wp-versions }}; do
+            case "$version" in
+              trunk|nightly) resolved="trunk-$(date -u +%Y%m%d%H)" ;;
+              latest) resolved="$latest" ;;
+              *) resolved="$version" ;;
+            esac
+            key="$key-$resolved"
+          done
+
+          {
+            echo "latest=$latest"
+            echo "key=wp-test-suites${key}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Cache WordPress test suites
+        id: cache-wp
+        if: steps.available.outputs.phpunit == 'true'
+        uses: actions/cache@v6
+        with:
+          path: |
+            /tmp/wp-core-*
+            /tmp/wp-tests-*
+          key: ${{ runner.os }}-${{ steps.wp-versions.outputs.key }}
+
       # install-wp-tests.sh reaches for Subversion twice: for core when the
       # version is trunk, and for the test suite on every version. Both
       # directories are populated from tarballs here, which makes the script skip
@@ -308,7 +346,7 @@ jobs:
       - name: Install WordPress test suites
         if: steps.available.outputs.phpunit == 'true'
         run: |
-          latest="$(curl -fsSL https://api.wordpress.org/core/version-check/1.7/ | jq -r '.offers[0].version')"
+          latest="${{ steps.wp-versions.outputs.latest }}"
 
           for version in ${{ inputs.wp-versions }}; do
             slug="${version//[^[:alnum:]]/-}"
@@ -317,6 +355,15 @@ jobs:
             work="/tmp/wp-develop-$slug"
 
             echo "::group::Install WordPress $version"
+
+            # The script still has to run on a cache hit: it creates the database.
+            if [ "${{ steps.cache-wp.outputs.cache-hit }}" = "true" ]; then
+              WP_CORE_DIR="$core" WP_TESTS_DIR="$tests" \
+                bash bin/install-wp-tests.sh "wp_tests_$slug" "$DB_USER" "$DB_PASS" "$DB_HOST" "$version"
+              echo "::endgroup::"
+              continue
+            fi
+
             mkdir -p "$core" "$tests" "$work"
 
             if [ "$version" = "trunk" ] || [ "$version" = "nightly" ]; then
