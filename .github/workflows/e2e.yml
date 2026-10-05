@@ -168,7 +168,7 @@ jobs:
         if: >-
           ${{ !cancelled() && inputs.slack-channel != '' &&
           (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
-        uses: wearerequired/slack-messaging-action@v3
+        uses: wearerequired/slack-messaging-action@v4
         with:
           bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
           channel: ${{ inputs.slack-channel }}
