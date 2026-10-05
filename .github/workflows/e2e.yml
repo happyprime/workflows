@@ -30,11 +30,9 @@ on:
         default: '.'
       artifact-paths:
         type: string
-        description: 'Newline separated paths, relative to working-directory, uploaded when the suite fails.'
+        description: 'Newline separated paths, relative to the repository root, uploaded when the suite fails. Defaults to tests/e2e/playwright-report/ and tests/e2e/test-results/ under working-directory.'
         required: false
-        default: |
-          tests/e2e/playwright-report/
-          tests/e2e/test-results/
+        default: ''
       playwright-browsers:
         type: string
         description: 'Space separated browsers to install with their system dependencies. wp-scripts test-playwright downloads all three whether or not the suite uses them.'
@@ -130,17 +128,29 @@ jobs:
 
       # Traces and screenshots are kept on failure only, so that is the only
       # time there is anything to upload.
-      # upload-artifact ignores `defaults.run`, so its paths are joined to
-      # working-directory here.
+      # upload-artifact ignores `defaults.run` and rejects any `.` or `..`
+      # path segment, so the default paths are built from working-directory
+      # here without a leading `./`.
       - name: Resolve report paths
         id: report
         if: ${{ failure() }}
         env:
           PATHS: ${{ inputs.artifact-paths }}
+          DIR: ${{ inputs.working-directory }}
         run: |
+          prefix="${DIR#./}"
+          prefix="${prefix%/}"
+          [ "$prefix" = "." ] && prefix=""
+          prefix="${prefix:+$prefix/}"
+
           {
             echo 'paths<<EOF'
-            printf '%s\n' "$PATHS" | sed '/^$/d' | sed "s#^#${{ inputs.working-directory }}/#"
+            if [ -n "$PATHS" ]; then
+              printf '%s\n' "$PATHS" | sed '/^$/d'
+            else
+              echo "${prefix}tests/e2e/playwright-report/"
+              echo "${prefix}tests/e2e/test-results/"
+            fi
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
