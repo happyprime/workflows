@@ -35,6 +35,11 @@ on:
         default: |
           tests/e2e/playwright-report/
           tests/e2e/test-results/
+      playwright-browsers:
+        type: string
+        description: 'Space separated browsers to install with their system dependencies. wp-scripts test-playwright downloads all three whether or not the suite uses them.'
+        required: false
+        default: 'chromium'
       wp-core:
         type: string
         description: 'wp-env core source. Defaults to WordPress trunk.'
@@ -115,7 +120,7 @@ jobs:
         run: ${{ inputs.setup-command }}
 
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps ${{ inputs.playwright-browsers }}
 
       # A job that reaches its own timeout is cancelled, which skips the Slack
       # report. A step timeout fails the step instead, so the report still goes.
