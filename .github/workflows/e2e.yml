@@ -23,6 +23,18 @@ on:
         description: 'PHP version that runs Composer. Match the phpVersion in .wp-env.json.'
         required: false
         default: '8.3'
+      working-directory:
+        type: string
+        description: 'Directory holding the plugin, its package.json, and its .wp-env.json.'
+        required: false
+        default: '.'
+      artifact-paths:
+        type: string
+        description: 'Newline separated paths, relative to working-directory, uploaded when the suite fails.'
+        required: false
+        default: |
+          tests/e2e/playwright-report/
+          tests/e2e/test-results/
       wp-core:
         type: string
         description: 'wp-env core source. Defaults to WordPress trunk.'
@@ -55,6 +67,9 @@ jobs:
     # A cold wp-env start pulls WordPress and the Docker images, so this is
     # slower than the other checks. Runs take 5 to 12 minutes.
     timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
 
     steps:
       - name: Checkout
@@ -65,12 +80,13 @@ jobs:
         with:
           node-version: ${{ format('{0}', inputs.node-version) }}
           cache: npm
+          cache-dependency-path: ${{ format('{0}/package-lock.json', inputs.working-directory) }}
 
       - name: Install dependencies
         run: npm ci
 
       - name: Setup PHP
-        if: ${{ hashFiles('composer.json') != '' }}
+        if: ${{ hashFiles(format('{0}/composer.json', inputs.working-directory)) != '' }}
         uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ inputs.php-version }}
@@ -81,7 +97,7 @@ jobs:
       # gitignored, so activation fatals without this. `--no-dev` is what the
       # plugin ships.
       - name: Install PHP dependencies
-        if: ${{ hashFiles('composer.json') != '' }}
+        if: ${{ hashFiles(format('{0}/composer.json', inputs.working-directory)) != '' }}
         env:
           COMPOSER_AUTH: ${{ secrets.composer-auth-token && format('{{"github-oauth":{{"github.com":"{0}"}}}}', secrets.composer-auth-token) || '' }}
         run: composer install --no-dev --prefer-dist --no-progress --optimize-autoloader
@@ -109,14 +125,26 @@ jobs:
 
       # Traces and screenshots are kept on failure only, so that is the only
       # time there is anything to upload.
+      # upload-artifact ignores `defaults.run`, so its paths are joined to
+      # working-directory here.
+      - name: Resolve report paths
+        id: report
+        if: ${{ failure() }}
+        env:
+          PATHS: ${{ inputs.artifact-paths }}
+        run: |
+          {
+            echo 'paths<<EOF'
+            printf '%s\n' "$PATHS" | sed '/^$/d' | sed "s#^#${{ inputs.working-directory }}/#"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Upload the Playwright report
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
-          path: |
-            tests/e2e/playwright-report/
-            tests/e2e/test-results/
+          path: ${{ steps.report.outputs.paths }}
           retention-days: 7
 
       # Report only scheduled and manual runs. A pull request run is already
